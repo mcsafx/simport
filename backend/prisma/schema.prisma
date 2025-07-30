@@ -1,0 +1,409 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum StatusEmbarque {
+  PRE_EMBARQUE
+  CARREGADO_BORDO
+  EM_TRANSITO
+  CHEGADA_PORTO
+  PRESENCA_CARGA
+  REGISTRO_DI
+  CANAL_PARAMETRIZADO
+  LIBERADO_CARREGAMENTO
+  AGENDAMENTO_RETIRADA
+  ENTREGUE
+  // Novos status para fluxo de entreposto
+  ENTRADA_ENTREPOSTO
+  AGUARDANDO_NACIONALIZACAO
+  NACIONALIZACAO_PARCIAL
+  NACIONALIZACAO_COMPLETA
+}
+
+enum TipoImportacao {
+  CONTA_PROPRIA
+  VIA_TRADE
+}
+
+enum Unidade {
+  CEARA
+  SANTA_CATARINA
+}
+
+enum UserRole {
+  ADMIN
+  COORDENADOR
+  OPERADOR
+  VISUALIZADOR
+}
+
+enum TipoEntreposto {
+  CLIA
+  EADI
+}
+
+enum TipoUnidadeMedida {
+  KG
+  G
+  MG
+  L
+  ML
+  UN
+  M
+  CM
+  M2
+  M3
+}
+
+// User Management
+model User {
+  id        String   @id @default(cuid())
+  nome      String
+  email     String   @unique
+  password  String
+  role      UserRole @default(OPERADOR)
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+// Master Data
+model Exportador {
+  id           String @id @default(cuid())
+  nomeEmpresa  String
+  pais         String
+  codigoERP    String?
+  ativo        Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  embarques    Embarque[]
+  invoices     Invoice[] @relation("InvoiceExportador")
+
+  @@map("exportadores")
+}
+
+// Removendo model Contato pois não será mais usado
+
+model Porto {
+  id                String @id @default(cuid())
+  nome              String
+  codigo            String @unique
+  pais              String
+  cidade            String
+  ativo             Boolean @default(true)
+
+  // Relations
+  embarquesOrigem   Embarque[] @relation("PortoOrigem")
+  embarquesDestino  Embarque[] @relation("PortoDestino")
+
+  @@map("portos")
+}
+
+model Armador {
+  id             String @id @default(cuid())
+  nome           String
+  linkTracking   String?
+  ativo          Boolean @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  embarques      Embarque[]
+
+  @@map("armadores")
+}
+
+model Moeda {
+  id        String @id @default(cuid())
+  codigo    String @unique // USD, EUR, BRL, etc
+  nome      String // Dólar Americano, Euro, Real, etc
+  simbolo   String // $, €, R$, etc
+  ativo     Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("moedas")
+}
+
+model UnidadeNegocio {
+  id           String @id @default(cuid())
+  nome         String // Ceará, Santa Catarina
+  razaoSocial  String
+  cnpj         String @unique
+  endereco     String
+  cidade       String
+  estado       String
+  cep          String
+  telefone     String?
+  email        String?
+  observacoes  String?
+  ativo        Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("unidades_negocio")
+}
+
+model TipoUnidadeMedidaCadastro {
+  id        String @id @default(cuid())
+  codigo    String @unique // KG, G, L, UN, etc
+  nome      String // Kilograma, Grama, Litro, Unidade, etc
+  simbolo   String // kg, g, l, un, etc
+  ativo     Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  produtos  Produto[]
+
+  @@map("tipos_unidade_medida")
+}
+
+model Armazem {
+  id           String @id @default(cuid())
+  nome         String
+  razaoSocial  String
+  cnpj         String? @unique
+  endereco     String
+  cidade       String
+  estado       String
+  cep          String
+  telefone     String?
+  email        String?
+  observacoes  String?
+  ativo        Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("armazens")
+}
+
+model EmpresaEntreposto {
+  id           String @id @default(cuid())
+  nome         String
+  cnpj         String @unique
+  cidade       String
+  estado       String
+  cep          String
+  endereco     String
+  email        String?
+  telefone     String?
+  contato      String?
+  observacoes  String?
+  ativo        Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  entrepostos  EntrepostoAduaneiro[]
+
+  @@map("empresas_entreposto")
+}
+
+// Main Business Entities
+model Embarque {
+  id                   String         @id @default(cuid())
+  numeroReferencia     String         @unique
+  referenciaExterna    String?        // Nova referência do despachante/trade
+  tipoImportacao       TipoImportacao
+  unidade              Unidade
+  frete                Decimal        @db.Decimal(15,2)
+  moeda                String         @default("USD")
+  dataEmbarquePrevista DateTime
+  dataETAPrevista      DateTime
+  dataETAReal          DateTime?
+  status               StatusEmbarque @default(PRE_EMBARQUE)
+  observacoes          String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  // Foreign Keys
+  exportadorId         String
+  armadorId            String
+  portoOrigemId        String
+  portoDestinoId       String
+
+  // Relations
+  exportador           Exportador @relation(fields: [exportadorId], references: [id])
+  armador              Armador @relation(fields: [armadorId], references: [id])
+  portoOrigem          Porto @relation("PortoOrigem", fields: [portoOrigemId], references: [id])
+  portoDestino         Porto @relation("PortoDestino", fields: [portoDestinoId], references: [id])
+  containers           Container[]
+  invoices             Invoice[]
+  documentos           Documento[]
+  entrepostos          EntrepostoAduaneiro[]
+  historicoStatus      HistoricoStatus[]
+
+  @@map("embarques")
+}
+
+model Container {
+  id         String @id @default(cuid())
+  numero     String
+  tipo       String
+  tamanho    String
+  peso       Decimal? @db.Decimal(10,2)
+  embarqueId String
+  invoiceId  String?
+
+  // Relations
+  embarque   Embarque @relation(fields: [embarqueId], references: [id], onDelete: Cascade)
+  invoice    Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@map("containers")
+}
+
+model Invoice {
+  id             String @id @default(cuid())
+  numero         String
+  dataEmissao    DateTime
+  valorTotal     Decimal @db.Decimal(15,2)
+  moeda          String @default("USD")
+  peso           Decimal? @db.Decimal(10,2)
+  volumes        Int?
+  observacoes    String?
+  embarqueId     String
+  exportadorId   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  embarque       Embarque @relation(fields: [embarqueId], references: [id], onDelete: Cascade)
+  exportador     Exportador @relation("InvoiceExportador", fields: [exportadorId], references: [id])
+  containers     Container[]
+  produtos       Produto[]
+
+  @@map("invoices")
+}
+
+model Produto {
+  id                    String @id @default(cuid())
+  descricao             String
+  ncm                   String
+  quantidade            Decimal @db.Decimal(15,4)
+  unidadeMedidaId       String
+  valorUnitario         Decimal @db.Decimal(15,4)
+  valorTotal            Decimal @db.Decimal(15,2)
+  peso                  Decimal? @db.Decimal(10,2)
+  invoiceId             String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  invoice               Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  unidadeMedida         TipoUnidadeMedidaCadastro @relation(fields: [unidadeMedidaId], references: [id])
+
+  @@map("produtos")
+}
+
+model Documento {
+  id         String   @id @default(cuid())
+  nome       String
+  tipo       String
+  url        String
+  tamanho    Int?
+  uploadedAt DateTime @default(now())
+  embarqueId String
+
+  // Relations
+  embarque   Embarque @relation(fields: [embarqueId], references: [id], onDelete: Cascade)
+
+  @@map("documentos")
+}
+
+model HistoricoStatus {
+  id          String         @id @default(cuid())
+  statusAnterior StatusEmbarque?
+  statusNovo  StatusEmbarque
+  observacoes String?
+  createdAt   DateTime       @default(now())
+  embarqueId  String
+
+  // Relations
+  embarque    Embarque @relation(fields: [embarqueId], references: [id], onDelete: Cascade)
+
+  @@map("historico_status")
+}
+
+// Customs Warehouse Management
+model EntrepostoAduaneiro {
+  id                 String           @id @default(cuid())
+  numeroDA           String           @unique
+  tipoEntreposto     TipoEntreposto
+  dataRegistroDA     DateTime
+  prazoVencimento    DateTime
+  valorTotal         Decimal          @db.Decimal(15,2)
+  moeda              String           @default("USD")
+  ativo              Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  embarqueId         String
+  empresaEntrepostoId String
+
+  // Relations
+  embarque           Embarque @relation(fields: [embarqueId], references: [id])
+  empresaEntreposto  EmpresaEntreposto @relation(fields: [empresaEntrepostoId], references: [id])
+  itens              ItemEntreposto[]
+  retiradas          RetiradaEntreposto[]
+
+  @@map("entrepostos_aduaneiros")
+}
+
+model ItemEntreposto {
+  id               String @id @default(cuid())
+  descricao        String
+  ncm              String
+  quantidadeOriginal Int
+  quantidadeDisponivel Int
+  valorUnitario    Decimal @db.Decimal(10,4)
+  entrepostoId     String
+
+  // Relations
+  entreposto       EntrepostoAduaneiro @relation(fields: [entrepostoId], references: [id], onDelete: Cascade)
+  retiradas        ItemRetirada[]
+
+  @@map("itens_entreposto")
+}
+
+model RetiradaEntreposto {
+  id                    String   @id @default(cuid())
+  novaFaturaReferencia  String
+  numeroDI              String?
+  dataRegistroDI        DateTime?
+  valorTotal            Decimal  @db.Decimal(15,2)
+  createdAt             DateTime @default(now())
+  entrepostoId          String
+
+  // Relations
+  entreposto            EntrepostoAduaneiro @relation(fields: [entrepostoId], references: [id], onDelete: Cascade)
+  itens                 ItemRetirada[]
+
+  @@map("retiradas_entreposto")
+}
+
+model ItemRetirada {
+  id                 String @id @default(cuid())
+  quantidadeRetirada Int
+  valorUnitario      Decimal @db.Decimal(10,4)
+  retiradaId         String
+  itemOriginalId     String
+
+  // Relations
+  retirada           RetiradaEntreposto @relation(fields: [retiradaId], references: [id], onDelete: Cascade)
+  itemOriginal       ItemEntreposto @relation(fields: [itemOriginalId], references: [id])
+
+  @@map("itens_retirada")
+}
