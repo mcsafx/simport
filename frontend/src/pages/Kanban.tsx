@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import InvoiceForm from '../components/InvoiceForm'
+import DAModal from '../components/DAModal'
 
 interface Embarque {
   id: string
@@ -92,22 +93,38 @@ const statusConfig = {
   }
 }
 
+// Estrutura de trilhas para bifurcação visual
+const workflowSections = {
+  common: [
+    'PRE_EMBARQUE',
+    'CARREGADO_BORDO', 
+    'EM_TRANSITO',
+    'CHEGADA_PORTO',
+    'PRESENCA_CARGA'
+  ],
+  nacionalizacao: [
+    'REGISTRO_DI',
+    'CANAL_PARAMETRIZADO',
+    'LIBERADO_CARREGAMENTO'
+  ],
+  clia: [
+    'ENTRADA_ENTREPOSTO',
+    'AGUARDANDO_NACIONALIZACAO',
+    'NACIONALIZACAO_PARCIAL',
+    'NACIONALIZACAO_COMPLETA'
+  ],
+  final: [
+    'AGENDAMENTO_RETIRADA',
+    'ENTREGUE'
+  ]
+}
+
+// Lista completa para compatibilidade
 const statusOrder = [
-  'PRE_EMBARQUE',
-  'CARREGADO_BORDO', 
-  'EM_TRANSITO',
-  'CHEGADA_PORTO',
-  'PRESENCA_CARGA',
-  'REGISTRO_DI',
-  'CANAL_PARAMETRIZADO',
-  'LIBERADO_CARREGAMENTO',
-  'AGENDAMENTO_RETIRADA',
-  'ENTREGUE',
-  // Novos status para fluxo de entreposto
-  'ENTRADA_ENTREPOSTO',
-  'AGUARDANDO_NACIONALIZACAO',
-  'NACIONALIZACAO_PARCIAL',
-  'NACIONALIZACAO_COMPLETA'
+  ...workflowSections.common,
+  ...workflowSections.nacionalizacao,
+  ...workflowSections.clia,
+  ...workflowSections.final
 ]
 
 export default function Kanban() {
@@ -120,6 +137,9 @@ export default function Kanban() {
   const [showInvoiceForm, setShowInvoiceForm] = useState(false)
   const [invoices, setInvoices] = useState<any[]>([])
   const [loadingInvoices, setLoadingInvoices] = useState(false)
+  const [showDAModal, setShowDAModal] = useState(false)
+  const [embarqueForDA, setEmbarqueForDA] = useState<Embarque | null>(null)
+  const [pendingDropStatus, setPendingDropStatus] = useState<string | null>(null)
   
   // Estados dos filtros
   const [filtros, setFiltros] = useState({
@@ -285,8 +305,27 @@ export default function Kanban() {
     
     if (!draggedItem) return
 
+    // Validações especiais para transições críticas
+    if (newStatus === 'ENTRADA_ENTREPOSTO') {
+      // Abrir modal de DA
+      const embarque = embarques.find(e => e.id === draggedItem)
+      if (embarque) {
+        setEmbarqueForDA(embarque)
+        setPendingDropStatus(newStatus)
+        setShowDAModal(true)
+        setDraggedItem(null)
+        return
+      }
+    }
+
+    // Para outras transições, continuar normal
+    await processStatusChange(draggedItem, newStatus)
+    setDraggedItem(null)
+  }
+
+  const processStatusChange = async (embarqueId: string, newStatus: string) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/embarques/${draggedItem}`, {
+      const response = await fetch(`http://localhost:3001/api/embarques/${embarqueId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json'
@@ -299,7 +338,7 @@ export default function Kanban() {
       if (result.success) {
         setEmbarques(prev => 
           prev.map(embarque => 
-            embarque.id === draggedItem 
+            embarque.id === embarqueId 
               ? { ...embarque, status: newStatus }
               : embarque
           )
@@ -310,7 +349,54 @@ export default function Kanban() {
     } catch (err) {
       setError('Erro de conexão com o servidor')
     }
+  }
 
+  const handleDAConfirm = async (dadosDA: any) => {
+    try {
+      // Criar entreposto via API
+      const response = await fetch('http://localhost:3001/api/entrepostos/create-from-embarque', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          embarqueId: embarqueForDA?.id,
+          ...dadosDA
+        })
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        // Atualizar estado local
+        setEmbarques(prev => 
+          prev.map(embarque => 
+            embarque.id === embarqueForDA?.id 
+              ? { ...embarque, status: 'ENTRADA_ENTREPOSTO' }
+              : embarque
+          )
+        )
+        
+        // Fechar modal
+        setShowDAModal(false)
+        setEmbarqueForDA(null)
+        setPendingDropStatus(null)
+        
+        // Recarregar dados para garantir sincronização
+        carregarEmbarques()
+      } else {
+        throw new Error(result.message || 'Erro ao criar DA')
+      }
+    } catch (error) {
+      console.error('Erro ao processar DA:', error)
+      throw error // Re-throw para o modal tratar
+    }
+  }
+
+  const handleDACancel = () => {
+    setShowDAModal(false)
+    setEmbarqueForDA(null)
+    setPendingDropStatus(null)
     setDraggedItem(null)
   }
 
@@ -322,6 +408,218 @@ export default function Kanban() {
     })
     
     return grupos
+  }
+
+  const agruparPorSecoes = () => {
+    const grupos = agruparPorStatus()
+    return {
+      common: workflowSections.common.map(status => ({ status, embarques: grupos[status] || [] })),
+      nacionalizacao: workflowSections.nacionalizacao.map(status => ({ status, embarques: grupos[status] || [] })),
+      clia: workflowSections.clia.map(status => ({ status, embarques: grupos[status] || [] })),
+      final: workflowSections.final.map(status => ({ status, embarques: grupos[status] || [] }))
+    }
+  }
+
+  // Componente para renderizar uma coluna individual
+  const renderColumn = (status: string, embarques: Embarque[]) => {
+    const config = statusConfig[status]
+    
+    return (
+      <div
+        key={status}
+        style={{
+          minWidth: '280px',
+          background: 'rgba(255,255,255,0.1)',
+          borderRadius: '12px',
+          backdropFilter: 'blur(10px)',
+          padding: '15px',
+          maxHeight: '80vh',
+          display: 'flex',
+          flexDirection: 'column'
+        }}
+        onDragOver={handleDragOver}
+        onDrop={(e) => handleDrop(e, status)}
+      >
+        {/* Cabeçalho da Coluna */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: '15px',
+          padding: '10px',
+          background: `${config.color}33`,
+          borderRadius: '8px',
+          border: `2px solid ${config.color}66`
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '20px' }}>{config.icon}</span>
+            <h3 style={{ 
+              margin: 0, 
+              fontSize: '14px', 
+              fontWeight: 'bold',
+              color: config.color
+            }}>
+              {config.label}
+            </h3>
+          </div>
+          <span style={{
+            background: config.color,
+            color: 'white',
+            padding: '4px 8px',
+            borderRadius: '12px',
+            fontSize: '12px',
+            fontWeight: 'bold'
+          }}>
+            {embarques.length}
+          </span>
+        </div>
+
+        {/* Cards dos Embarques */}
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px'
+        }}>
+          {embarques.map(embarque => {
+            const diasAtraso = calcularDiasAtraso(embarque.dataETAPrevista)
+            
+            return (
+              <div
+                key={embarque.id}
+                draggable
+                onDragStart={(e) => handleDragStart(e, embarque.id)}
+                onClick={() => handleOpenEmbarqueDetails(embarque)}
+                style={{
+                  background: 'rgba(255,255,255,0.9)',
+                  color: '#1f2937',
+                  padding: '15px',
+                  borderRadius: '8px',
+                  cursor: 'grab',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                  transition: 'transform 0.2s, box-shadow 0.2s',
+                  border: draggedItem === embarque.id ? '2px solid #3B82F6' : 'none'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-2px)'
+                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)'
+                  e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)'
+                }}
+              >
+                {/* Header do Card */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  marginBottom: '10px'
+                }}>
+                  <div>
+                    <h4 style={{ 
+                      margin: '0 0 4px 0', 
+                      fontSize: '16px', 
+                      fontWeight: 'bold',
+                      color: '#1f2937'
+                    }}>
+                      {embarque.numeroReferencia}
+                    </h4>
+                    <div style={{
+                      fontSize: '12px',
+                      color: '#6b7280',
+                      background: embarque.tipoImportacao === 'CONTA_PROPRIA' ? '#dcfce7' : '#dbeafe',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      display: 'inline-block'
+                    }}>
+                      {embarque.tipoImportacao === 'CONTA_PROPRIA' ? 'Conta Própria' : 'Via Trade'}
+                    </div>
+                  </div>
+                  
+                  {diasAtraso > 0 && (
+                    <div style={{
+                      background: '#fee2e2',
+                      color: '#dc2626',
+                      padding: '4px 8px',
+                      borderRadius: '12px',
+                      fontSize: '11px',
+                      fontWeight: 'bold'
+                    }}>
+                      ⚠️ {diasAtraso}d
+                    </div>
+                  )}
+                </div>
+
+                {/* Exportador */}
+                <div style={{ marginBottom: '8px' }}>
+                  <div style={{ 
+                    fontSize: '13px', 
+                    fontWeight: 'bold',
+                    color: '#374151' 
+                  }}>
+                    {embarque.exportador.nomeEmpresa}
+                  </div>
+                  <div style={{ 
+                    fontSize: '11px', 
+                    color: '#6b7280' 
+                  }}>
+                    {embarque.exportador.paisOrigem} • {embarque.armador}
+                  </div>
+                </div>
+
+                {/* Unidade e ETA */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '8px'
+                }}>
+                  <span style={{
+                    fontSize: '11px',
+                    background: '#f3f4f6',
+                    color: '#374151',
+                    padding: '2px 6px',
+                    borderRadius: '4px'
+                  }}>
+                    {embarque.unidade === 'CEARA' ? 'CE' : 'SC'}
+                  </span>
+                  <span style={{ 
+                    fontSize: '11px', 
+                    color: '#6b7280' 
+                  }}>
+                    ETA: {formatarData(embarque.dataETAPrevista)}
+                  </span>
+                </div>
+
+                {/* Frete */}
+                <div style={{
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  color: '#059669',
+                  textAlign: 'right'
+                }}>
+                  {formatarMoeda(embarque.frete, embarque.moeda)}
+                </div>
+              </div>
+            )
+          })}
+
+          {embarques.length === 0 && (
+            <div style={{
+              textAlign: 'center',
+              color: 'rgba(255,255,255,0.6)',
+              fontSize: '14px',
+              fontStyle: 'italic',
+              padding: '20px'
+            }}>
+              Nenhum embarque neste status
+            </div>
+          )}
+        </div>
+      </div>
+    )
   }
 
   if (loading) {
@@ -338,7 +636,7 @@ export default function Kanban() {
     )
   }
 
-  const gruposEmbarques = agruparPorStatus()
+  const secoes = agruparPorSecoes()
 
   return (
     <div style={{
@@ -625,214 +923,132 @@ export default function Kanban() {
         </div>
       )}
 
-      {/* Kanban Board */}
-      <div style={{
-        display: 'flex',
-        gap: '20px',
-        overflowX: 'auto',
-        paddingBottom: '20px'
-      }}>
-        {statusOrder.map(status => {
-          const config = statusConfig[status]
-          const embarquesNoStatus = gruposEmbarques[status] || []
+      {/* Kanban Board com Bifurcação */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '30px' }}>
+        
+        {/* Seção 1: Fluxo Comum */}
+        <div>
+          <div style={{
+            textAlign: 'center',
+            marginBottom: '15px',
+            padding: '10px',
+            background: 'rgba(255,255,255,0.1)',
+            borderRadius: '8px',
+            backdropFilter: 'blur(10px)'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold' }}>
+              🚢 Fluxo Comum - Até Chegada no Porto
+            </h3>
+          </div>
+          <div style={{
+            display: 'flex',
+            gap: '20px',
+            overflowX: 'auto',
+            paddingBottom: '10px'
+          }}>
+            {secoes.common.map(({ status, embarques }) => 
+              renderColumn(status, embarques)
+            )}
+          </div>
+        </div>
+
+        {/* Seção 2: Bifurcação */}
+        <div>
+          <div style={{
+            textAlign: 'center',
+            marginBottom: '15px',
+            padding: '10px',
+            background: 'rgba(255,255,255,0.1)',
+            borderRadius: '8px',
+            backdropFilter: 'blur(10px)'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold' }}>
+              🔀 Bifurcação do Processo
+            </h3>
+          </div>
           
-          return (
-            <div
-              key={status}
-              style={{
-                minWidth: '280px',
-                background: 'rgba(255,255,255,0.1)',
-                borderRadius: '12px',
-                backdropFilter: 'blur(10px)',
-                padding: '15px',
-                maxHeight: '80vh',
-                display: 'flex',
-                flexDirection: 'column'
-              }}
-              onDragOver={handleDragOver}
-              onDrop={(e) => handleDrop(e, status)}
-            >
-              {/* Cabeçalho da Coluna */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            
+            {/* Trilha Superior: Nacionalização Direta */}
+            <div>
               <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: '15px',
-                padding: '10px',
-                background: `${config.color}33`,
-                borderRadius: '8px',
-                border: `2px solid ${config.color}66`
+                textAlign: 'left',
+                marginBottom: '10px',
+                padding: '8px 15px',
+                background: 'rgba(16, 185, 129, 0.2)',
+                borderRadius: '6px',
+                border: '2px solid rgba(16, 185, 129, 0.4)'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '20px' }}>{config.icon}</span>
-                  <h3 style={{ 
-                    margin: 0, 
-                    fontSize: '14px', 
-                    fontWeight: 'bold',
-                    color: config.color
-                  }}>
-                    {config.label}
-                  </h3>
-                </div>
-                <span style={{
-                  background: config.color,
-                  color: 'white',
-                  padding: '4px 8px',
-                  borderRadius: '12px',
-                  fontSize: '12px',
-                  fontWeight: 'bold'
-                }}>
-                  {embarquesNoStatus.length}
-                </span>
+                <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 'bold', color: '#10b981' }}>
+                  🚚 Trilha A: Nacionalização Direta
+                </h4>
               </div>
-
-              {/* Cards dos Embarques */}
               <div style={{
-                flex: 1,
-                overflowY: 'auto',
                 display: 'flex',
-                flexDirection: 'column',
-                gap: '10px'
+                gap: '20px',
+                overflowX: 'auto',
+                paddingBottom: '10px'
               }}>
-                {embarquesNoStatus.map(embarque => {
-                  const diasAtraso = calcularDiasAtraso(embarque.dataETAPrevista)
-                  
-                  return (
-                    <div
-                      key={embarque.id}
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, embarque.id)}
-                      onClick={() => handleOpenEmbarqueDetails(embarque)}
-                      style={{
-                        background: 'rgba(255,255,255,0.9)',
-                        color: '#1f2937',
-                        padding: '15px',
-                        borderRadius: '8px',
-                        cursor: 'grab',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                        transition: 'transform 0.2s, box-shadow 0.2s',
-                        border: draggedItem === embarque.id ? '2px solid #3B82F6' : 'none'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.transform = 'translateY(-2px)'
-                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)'
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.transform = 'translateY(0)'
-                        e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)'
-                      }}
-                    >
-                      {/* Header do Card */}
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'flex-start',
-                        marginBottom: '10px'
-                      }}>
-                        <div>
-                          <h4 style={{ 
-                            margin: '0 0 4px 0', 
-                            fontSize: '16px', 
-                            fontWeight: 'bold',
-                            color: '#1f2937'
-                          }}>
-                            {embarque.numeroReferencia}
-                          </h4>
-                          <div style={{
-                            fontSize: '12px',
-                            color: '#6b7280',
-                            background: embarque.tipoImportacao === 'CONTA_PROPRIA' ? '#dcfce7' : '#dbeafe',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            display: 'inline-block'
-                          }}>
-                            {embarque.tipoImportacao === 'CONTA_PROPRIA' ? 'Conta Própria' : 'Via Trade'}
-                          </div>
-                        </div>
-                        
-                        {diasAtraso > 0 && (
-                          <div style={{
-                            background: '#fee2e2',
-                            color: '#dc2626',
-                            padding: '4px 8px',
-                            borderRadius: '12px',
-                            fontSize: '11px',
-                            fontWeight: 'bold'
-                          }}>
-                            ⚠️ {diasAtraso}d
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Exportador */}
-                      <div style={{ marginBottom: '8px' }}>
-                        <div style={{ 
-                          fontSize: '13px', 
-                          fontWeight: 'bold',
-                          color: '#374151' 
-                        }}>
-                          {embarque.exportador.nomeEmpresa}
-                        </div>
-                        <div style={{ 
-                          fontSize: '11px', 
-                          color: '#6b7280' 
-                        }}>
-                          {embarque.exportador.paisOrigem} • {embarque.armador}
-                        </div>
-                      </div>
-
-                      {/* Unidade e ETA */}
-                      <div style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: '8px'
-                      }}>
-                        <span style={{
-                          fontSize: '11px',
-                          background: '#f3f4f6',
-                          color: '#374151',
-                          padding: '2px 6px',
-                          borderRadius: '4px'
-                        }}>
-                          {embarque.unidade === 'CEARA' ? 'CE' : 'SC'}
-                        </span>
-                        <span style={{ 
-                          fontSize: '11px', 
-                          color: '#6b7280' 
-                        }}>
-                          ETA: {formatarData(embarque.dataETAPrevista)}
-                        </span>
-                      </div>
-
-                      {/* Frete */}
-                      <div style={{
-                        fontSize: '14px',
-                        fontWeight: 'bold',
-                        color: '#059669',
-                        textAlign: 'right'
-                      }}>
-                        {formatarMoeda(embarque.frete, embarque.moeda)}
-                      </div>
-                    </div>
-                  )
-                })}
-
-                {embarquesNoStatus.length === 0 && (
-                  <div style={{
-                    textAlign: 'center',
-                    color: 'rgba(255,255,255,0.6)',
-                    fontSize: '14px',
-                    fontStyle: 'italic',
-                    padding: '20px'
-                  }}>
-                    Nenhum embarque neste status
-                  </div>
+                {secoes.nacionalizacao.map(({ status, embarques }) => 
+                  renderColumn(status, embarques)
                 )}
               </div>
             </div>
-          )
-        })}
+
+            {/* Trilha Inferior: Fluxo CLIA */}
+            <div>
+              <div style={{
+                textAlign: 'left',
+                marginBottom: '10px',
+                padding: '8px 15px',
+                background: 'rgba(124, 58, 237, 0.2)',
+                borderRadius: '6px',
+                border: '2px solid rgba(124, 58, 237, 0.4)'
+              }}>
+                <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 'bold', color: '#7c3aed' }}>
+                  🏭 Trilha B: Fluxo CLIA/Entreposto
+                </h4>
+              </div>
+              <div style={{
+                display: 'flex',
+                gap: '20px',
+                overflowX: 'auto',
+                paddingBottom: '10px'
+              }}>
+                {secoes.clia.map(({ status, embarques }) => 
+                  renderColumn(status, embarques)
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Seção 3: Convergência Final */}
+        <div>
+          <div style={{
+            textAlign: 'center',
+            marginBottom: '15px',
+            padding: '10px',
+            background: 'rgba(255,255,255,0.1)',
+            borderRadius: '8px',
+            backdropFilter: 'blur(10px)'
+          }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 'bold' }}>
+              🎯 Convergência Final
+            </h3>
+          </div>
+          <div style={{
+            display: 'flex',
+            gap: '20px',
+            overflowX: 'auto',
+            paddingBottom: '20px',
+            justifyContent: 'center'
+          }}>
+            {secoes.final.map(({ status, embarques }) => 
+              renderColumn(status, embarques)
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Modal de Detalhes */}
@@ -1076,6 +1292,17 @@ export default function Kanban() {
           embarqueId={selectedEmbarque.id}
           onClose={handleCloseInvoiceForm}
           onSave={handleSaveInvoice}
+        />
+      )}
+
+      {/* Modal de DA */}
+      {showDAModal && embarqueForDA && (
+        <DAModal 
+          embarqueId={embarqueForDA.id}
+          embarque={embarqueForDA}
+          isOpen={showDAModal}
+          onClose={handleDACancel}
+          onConfirm={handleDAConfirm}
         />
       )}
     </div>

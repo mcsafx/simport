@@ -30,12 +30,14 @@ import embarquesRoutes from './routes/embarques'
 import dashboardRoutes from './routes/dashboard'
 import cadastrosRoutes from './routes/cadastros'
 import invoicesRoutes from './routes/invoices'
+import entrepostosRoutes from './routes/entrepostos'
 
 app.use('/api/auth', authRoutes)
 app.use('/api/embarques', embarquesRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 app.use('/api/cadastros', cadastrosRoutes)
 app.use('/api/invoices', invoicesRoutes)
+app.use('/api/entrepostos', entrepostosRoutes)
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
